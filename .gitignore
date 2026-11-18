@@ -1,0 +1,19 @@
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# secrets
+.env
+.env.local
+.env*.local
+
+# local, private conversation data: never commit
+data/
+
+.DS_Store
+npm-debug.log*
+
+# local tooling
+.claude/
