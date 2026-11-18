@@ -98,6 +98,10 @@ button { font: inherit; cursor: pointer; }
   flex: 1; resize: none; border: 0; outline: 0; background: transparent; color: var(--text);
   font: inherit; max-height: 200px; padding: 6px;
 }
+.composer .model {
+  border: 1px solid var(--border); background: var(--bg); color: var(--muted);
+  border-radius: 8px; padding: 6px 4px; font-size: 13px; max-width: 170px;
+}
 .composer .send {
   background: var(--accent); color: white; border: 0; border-radius: 10px; padding: 8px 14px;
 }

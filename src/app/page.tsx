@@ -5,6 +5,12 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ConversationSummary, SourceRef, StreamEvent, UiMessage } from "@/lib/types";
 
+interface ModelChoice {
+  id: string;
+  label: string;
+  hint: string;
+}
+
 interface LiveSearch {
   id: string;
   query: string;
@@ -30,6 +36,8 @@ export default function Chat() {
   const [messages, setMessages] = useState<ViewMessage[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [models, setModels] = useState<ModelChoice[]>([]);
+  const [model, setModel] = useState<string>("");
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -40,7 +48,25 @@ export default function Chat() {
 
   useEffect(() => {
     refreshList();
+    fetch("/api/models")
+      .then((r) => r.json())
+      .then((d: { models: ModelChoice[]; default: string }) => {
+        setModels(d.models);
+        let saved: string | null = null;
+        try {
+          saved = localStorage.getItem("minimi.model");
+        } catch {}
+        setModel(d.models.some((m) => m.id === saved) ? (saved as string) : d.default);
+      })
+      .catch(() => {});
   }, [refreshList]);
+
+  function chooseModel(id: string) {
+    setModel(id);
+    try {
+      localStorage.setItem("minimi.model", id);
+    } catch {}
+  }
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -98,6 +124,7 @@ export default function Chat() {
         body: JSON.stringify({
           conversationId: activeId,
           message,
+          model: model || undefined,
           tzOffsetMinutes: -new Date().getTimezoneOffset(),
           timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         }),
@@ -257,6 +284,22 @@ export default function Chat() {
                 }
               }}
             />
+            {models.length > 0 && (
+              <select
+                className="model"
+                aria-label="Model"
+                value={model}
+                disabled={busy}
+                onChange={(e) => chooseModel(e.target.value)}
+                title={models.find((m) => m.id === model)?.hint}
+              >
+                {models.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}: {m.hint}
+                  </option>
+                ))}
+              </select>
+            )}
             {busy ? (
               <button type="button" className="send" onClick={() => abortRef.current?.abort()}>
                 Stop

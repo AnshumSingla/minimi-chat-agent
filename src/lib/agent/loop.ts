@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { config, requireEnv } from "../config";
+import { config, requireEnv, type ModelOption } from "../config";
 import type { SourceRef, StreamEvent } from "../types";
 import { SYSTEM_PROMPT } from "./prompt";
 import { runWebSearch, webSearchTool } from "./tools";
@@ -28,8 +28,9 @@ export interface AgentResult {
 export async function runAgent(
   messages: MessageParam[],
   emit: (e: StreamEvent) => void,
-  signal?: AbortSignal,
+  opts: { model: ModelOption; signal?: AbortSignal },
 ): Promise<AgentResult> {
+  const { model, signal } = opts;
   const sources: AgentResult["sources"] = [];
   let text = "";
   let stopReason: string | null = null;
@@ -39,7 +40,7 @@ export async function runAgent(
 
     const stream = anthropic().beta.messages.stream(
       {
-        model: config.model,
+        model: model.id,
         max_tokens: config.maxTokens,
         system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
         tools: [webSearchTool],
@@ -49,9 +50,10 @@ export async function runAgent(
         messages,
         output_config: { effort: config.effort },
         // Server-side fallback: if the model declines (safety classifier false positive), the API
-        // retries on a fallback model instead of returning an empty refusal.
-        betas: ["server-side-fallback-2026-07-01"],
-        fallbacks: "default",
+        // retries on a fallback model instead of returning an empty refusal. Not offered for Haiku.
+        ...(model.serverFallback
+          ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const }
+          : {}),
       },
       { signal },
     );

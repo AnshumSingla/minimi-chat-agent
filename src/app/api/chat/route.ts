@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { runAgent, type MessageParam } from "@/lib/agent/loop";
 import { turnContext } from "@/lib/agent/prompt";
-import { config } from "@/lib/config";
+import { config, resolveModel } from "@/lib/config";
 import { addMessage, addSources, conversationExists, createConversation, recentMessages } from "@/lib/db";
 import { recall } from "@/lib/memory";
 import type { StreamEvent } from "@/lib/types";
@@ -15,6 +15,8 @@ const Body = z.object({
   /** Minutes east of UTC, i.e. -new Date().getTimezoneOffset() in the browser. */
   tzOffsetMinutes: z.number().int().min(-840).max(840).default(0),
   timeZone: z.string().max(64).optional(),
+  /** Must be one of the allowlisted MODELS; anything else falls back to the default. */
+  model: z.string().max(64).optional(),
 });
 
 export async function POST(req: Request) {
@@ -23,6 +25,7 @@ export async function POST(req: Request) {
     return Response.json({ error: "Invalid request" }, { status: 400 });
   }
   const { message, tzOffsetMinutes, timeZone } = parsed.data;
+  const model = resolveModel(parsed.data.model);
   let conversationId = parsed.data.conversationId ?? null;
   if (!conversationId || !conversationExists(conversationId)) {
     conversationId = createConversation(message);
@@ -50,7 +53,7 @@ export async function POST(req: Request) {
       const emit = (e: StreamEvent) => controller.enqueue(encoder.encode(JSON.stringify(e) + "\n"));
       emit({ type: "meta", conversationId: convId, memoryHits: memory.hits });
       try {
-        const result = await runAgent(messages, emit, req.signal);
+        const result = await runAgent(messages, emit, { model, signal: req.signal });
         const messageId = addMessage(convId, "assistant", result.text);
         addSources(messageId, result.sources);
         emit({ type: "done", messageId });
