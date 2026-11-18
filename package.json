@@ -7,9 +7,9 @@
     "node": ">=20"
   },
   "scripts": {
-    "dev": "cross-env NEXT_TELEMETRY_DISABLED=1 next dev",
+    "dev": "cross-env NEXT_TELEMETRY_DISABLED=1 next dev -H 127.0.0.1",
     "build": "cross-env NEXT_TELEMETRY_DISABLED=1 next build",
-    "start": "cross-env NEXT_TELEMETRY_DISABLED=1 next start",
+    "start": "cross-env NEXT_TELEMETRY_DISABLED=1 next start -H 127.0.0.1",
     "typecheck": "tsc --noEmit",
     "seed:demo": "tsx scripts/seed-demo.ts"
   },
