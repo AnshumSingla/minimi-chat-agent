@@ -14,13 +14,14 @@ cp .env.example .env.local   # then add ANTHROPIC_API_KEY and EXA_API_KEY
 npm run dev
 ```
 
-Open http://localhost:3000.
+Open http://localhost:3000. Pick the model (Sonnet, Haiku or Opus) next to the message box.
 
 Optional: `npm run seed:demo` adds three dated past conversations (last Monday, last Tuesday and
 3 November), so you can try recall right away.
 
 ## Privacy
 
-Conversations are stored only in `./data/minimi.db` on your machine (gitignored). Anthropic receives the
+Conversations are stored only in `./data/minimi.db` on your machine (gitignored). Semantic recall uses
+`all-MiniLM-L6-v2` running on-device. Its weights (~23 MB) are downloaded once into `./data/models`. Anthropic receives the
 chat context needed to answer. Exa receives search queries only. Delete a conversation, or all local data,
 from the sidebar.

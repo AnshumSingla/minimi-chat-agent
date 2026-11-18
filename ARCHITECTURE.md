@@ -10,9 +10,10 @@ Is your answer still correct today?"
 |----------------|-------------------------------------------------|-----|
 | Runtime        | Node 20+ / TypeScript                           | Challenge rule |
 | App            | Next.js (App Router), one process               | UI and API in one `npm run dev`, streaming route handlers |
-| LLM            | Anthropic Claude via `@anthropic-ai/sdk`        | Sonnet 5.5 answers (fast, strong tool use); model is set by env |
+| LLM            | Anthropic Claude via `@anthropic-ai/sdk`        | Model picker in the UI: Sonnet 5.5 (default), Haiku 5.5 (fastest), Opus 5.5 (deepest). Server-side allowlist |
 | Web search     | Exa REST API (`/search`)                        | Returns page **text** and **published dates**, filters by date (`startPublishedDate`), which suits "has X changed since Monday?" |
 | Memory         | Local SQLite file (`better-sqlite3`) + FTS5     | Zero setup, all data stays on the machine, full-text and date queries |
+| Semantic recall| `all-MiniLM-L6-v2` on-device (`@huggingface/transformers`, ONNX) | 23 MB embedding model that runs locally (the same model Prism uses), so history is never sent to an embeddings API |
 | Date parsing   | `chrono-node`                                   | Parses "last Tuesday", "on 3 November", "Monday" deterministically |
 | Validation     | `zod`                                           | Tool inputs are untrusted model output |
 
@@ -21,8 +22,13 @@ Is your answer still correct today?"
 - **Anthropic's server-side `web_search` tool:** less control over sources, dates and caching, and the
   search step is hidden from our code.
 - **Postgres/pgvector:** requires a running database, which breaks the plain `npm install && npm run dev`.
-- **A vector DB for memory:** recall here is mostly *by date* and *by named entity*, which SQL and FTS
-  handle exactly. Embeddings would add an API dependency and send user history to another vendor.
+- **A hosted embeddings API or vector DB:** it would send user history to another vendor. Vectors are
+  computed on-device by MiniLM and stored as BLOBs in the same SQLite file. A brute-force cosine scan is
+  instant for a personal history (thousands of rows).
+- **A small local model as the chat model** (e.g. MiniLM, or a 3–8B model via Ollama): MiniLM is an
+  embedding model and can't generate text or call tools. Small generative models are much worse at
+  multi-step search and synthesis, and Ollama is an extra install that breaks `npm run dev`. The privacy
+  gain comes from keeping *storage and recall* local instead.
 - **LangChain / Vercel AI SDK:** a ~150-line hand-written loop is easier to explain and debug, and
   it lets us check `stop_reason` precisely.
 
@@ -36,7 +42,7 @@ route.ts ──► 1. persist user message (SQLite)
           ├► 2. RECALL (harness, not a tool)
           │     ├ chrono-node resolves dates in the message against "now" in the user's timezone
           │     ├ SQL: past turns inside those day windows
-          │     ├ FTS5: past turns matching the topic ("Postgres hosting", "CRM")
+          │     ├ MiniLM (on-device) + FTS5: past turns matching the topic by meaning and keywords
           │     └ builds a <memory> block: past Q&A with timestamps + the sources used then
           ├► 3. build context: system prompt (static, cached) + history + [now, memory, user msg]
           ├► 4. AGENT LOOP (streaming)
@@ -56,9 +62,24 @@ harness *before* the model runs. This also helps:
 - **Honesty:** if recall finds nothing, the memory block says so explicitly. The model is told to say "I
   don't have a record of that" instead of inventing a past conversation.
 
-### Re-verification ("is your answer still correct today?")
+### Hybrid recall
 
-Every stored assistant answer keeps its **sources with `retrieved_at`** and `published_date`. When a
+When the message refers to the past but gives no date ("earlier I asked you which sales software to buy"),
+the user turns from other conversations are scored two ways:
+
+- **Meaning:** cosine similarity of local MiniLM vectors, with a threshold of 0.35. Measured: a paraphrase
+  such as "sales software" vs a "CRM shortlist" scores ~0.43, while unrelated chats score ≤0.3.
+- **Keywords:** FTS5 / BM25 for exact terms such as product names, which small embedding models handle
+  poorly.
+
+Hits from both are merged; a turn that matches both ways is ranked higher. When a date is given, the
+same scores rank turns from that day. The model loads at server start (`src/instrumentation.ts`). Recall
+waits at most 1.5 s for it, and if it isn't ready, recall falls back to keywords only. Vectors missing
+for older messages are filled in on later turns.
+
+### Re-verification
+
+Every stored answer keeps its **sources with `retrieved_at`** and `published_date`. When a
 past answer is recalled, the model sees *what it said, when, and from which pages*. It then searches
 again, using `start_published_date` = the date of the original answer, to find what changed since. The
 reply is shaped as: what I said then → what's true now → what changed (with sources).
@@ -93,6 +114,7 @@ messages(id, conversation_id, role, text, content_json, created_at)
      -- text: plain text for display/search; content_json: full API blocks for faithful replay
 sources(id, message_id, url, title, published_date, retrieved_at, query)
 messages_fts  (FTS5 virtual table over messages.text, kept in sync by triggers)
+message_embeddings(message_id, vec BLOB)   -- MiniLM vectors for user messages
 ```
 
 Timestamps are stored in UTC ISO-8601. Day windows are computed in the user's timezone, which the
@@ -103,6 +125,8 @@ browser sends with each request.
 - **All conversation data stays local** in `./data/` (gitignored). No cloud database, analytics or logging of
   message contents.
 - Next.js telemetry is disabled in the `dev` script.
+- Embeddings are computed on-device. The model weights (~23 MB) are downloaded once from the Hugging
+  Face hub into `./data/models`; no text is sent.
 - Only two services receive data:
   1. **Anthropic:** the conversation context needed to answer.
   2. **Exa:** *search queries only*. The system prompt requires queries to contain only the public topic
@@ -136,8 +160,11 @@ src/
     api/chat/route.ts                POST: run a turn, stream NDJSON
     api/conversations/route.ts       GET list, DELETE all
     api/conversations/[id]/route.ts  GET messages, DELETE one
+    api/models/route.ts              GET model allowlist for the picker
+  instrumentation.ts                 warms up the local embedding model at server start
   lib/
-    config.ts                        env + model settings
+    config.ts                        env, model allowlist, tuning knobs
+    embeddings.ts                    on-device MiniLM embeddings
     db.ts                            SQLite schema + queries
     memory.ts                        temporal resolution + recall
     search/exa.ts                    Exa client

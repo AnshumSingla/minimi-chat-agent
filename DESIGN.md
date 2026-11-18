@@ -7,8 +7,9 @@
 A Next.js app in a single process. Each user message goes through four steps:
 
 1. **Recall (in code).** Dates in the message ("last Tuesday", "3 November") are resolved
-   deterministically in the user's timezone. Past turns from those days, plus full-text matches on the
-   topic, are pulled from a local SQLite database.
+   deterministically in the user's timezone. Past turns from those days, plus matches on the topic,
+   are pulled from a local SQLite database. Topic matching combines meaning (MiniLM embeddings computed
+   on-device) and keywords (FTS5).
 2. **Context.** A static, cacheable system prompt, the conversation history, and a per-turn block with
    the current date and the recalled memory (what was asked, what was answered, when, and from which
    sources).
@@ -26,14 +27,17 @@ A Next.js app in a single process. Each user message goes through four steps:
   progress ("Searching: …") and an iteration cap.
 - **Freshness is explicit.** Every claim carries a date. The agent re-searches with a date filter when
   asked whether something changed.
-- **Private by default.** Conversations live in a local SQLite file. Exa receives only topic-level
-  queries, and telemetry is off.
+- **Private by default.** Conversations and their embeddings live in a local SQLite file. The embedding
+  model runs on the machine. Exa receives only topic-level queries, and telemetry is off.
+- **The user picks the model.** Haiku for quick lookups, Sonnet by default, Opus for deep comparisons.
+  The server only accepts models from its allowlist.
 
 ## Considered and rejected
 
-- DuckDuckGo (no API, no content or dates), Anthropic's server-side search (less control), vector DB
-  memory (recall here is by date and entity), Postgres (breaks `npm run dev`), agent frameworks (a
-  hand-written loop is easier to explain).
+- DuckDuckGo (no API, no content or dates), Anthropic's server-side search (less control), a hosted
+  embeddings API (would send history to another vendor), a small local chat model (MiniLM can't
+  generate text; Ollama-class models are weak at multi-step search and need an extra install), Postgres
+  (breaks `npm run dev`), agent frameworks (a hand-written loop is easier to explain).
 
 ## With another week
 
