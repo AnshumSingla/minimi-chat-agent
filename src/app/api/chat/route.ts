@@ -35,7 +35,7 @@ export async function POST(req: Request) {
 
   // History of this conversation (text-only replay; past turns' tool traffic is not resent).
   const history = recentMessages(convId, config.historyMessages);
-  const memory = recall(message, convId, tzOffsetMinutes, now);
+  const memory = await recall(message, convId, tzOffsetMinutes, now);
   addMessage(convId, "user", message, undefined, now.toISOString());
 
   const messages: MessageParam[] = history.map((m) => ({ role: m.role, content: m.text }));
@@ -60,7 +60,12 @@ export async function POST(req: Request) {
       } catch (err) {
         if (!req.signal.aborted) {
           console.error("[chat] agent error:", (err as Error).message);
-          emit({ type: "error", message: "Something went wrong while answering. Please try again." });
+          const msg = (err as Error).message;
+          // Setup problems (missing keys) are safe and useful to show; anything else stays generic.
+          emit({
+            type: "error",
+            message: /is not set/.test(msg) ? msg : "Something went wrong while answering. Please try again.",
+          });
         }
       } finally {
         controller.close();
