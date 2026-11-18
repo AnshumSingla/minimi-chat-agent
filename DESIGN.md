@@ -23,12 +23,16 @@ A Next.js app in a single process. Each user message goes through four steps:
 
 - **Only one tool.** Memory lookup is harness logic, not a second tool. It is also faster (no extra
   model hop), and date maths is more reliable in code than in the model.
-- **Right over fast, but fast.** Sonnet-class model, parallel searches, trimmed results, streaming
-  progress ("Searching: …") and an iteration cap.
+- **Right over fast, but fast.** Parallel searches, query-relevant highlights instead of whole pages,
+  a search cache, streaming progress ("Searching: …") and an iteration cap. Automatic prompt caching
+  means each tool-loop step re-reads earlier search results at cache price. A per-turn metrics log
+  shows the cost.
 - **Freshness is explicit.** Every claim carries a date. The agent re-searches with a date filter when
   asked whether something changed.
-- **Private by default.** Conversations and their embeddings live in a local SQLite file. The embedding
-  model runs on the machine. Exa receives only topic-level queries, and telemetry is off.
+- **Private by default.** Conversations and embeddings live in a local SQLite file and the embedding
+  model runs on the machine. The server only answers on localhost (Host and Origin checks), deleted
+  chats are erased from disk (FTS rebuild, WAL truncate, secure_delete), and a scrubber removes
+  emails, phone numbers and tokens from search queries before they reach Exa.
 - **The user picks the model.** Haiku for quick lookups, Sonnet by default, Opus for deep comparisons.
   The server only accepts models from its allowlist.
 
