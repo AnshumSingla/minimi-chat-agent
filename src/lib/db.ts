@@ -15,10 +15,16 @@ type DB = Database.Database;
 const globalForDb = globalThis as unknown as { __minimiDb?: DB };
 
 function open(): DB {
-  fs.mkdirSync(path.dirname(config.dbPath), { recursive: true });
+  // Owner-only permissions on POSIX (ignored on Windows, where the user profile ACLs apply).
+  fs.mkdirSync(path.dirname(config.dbPath), { recursive: true, mode: 0o700 });
   const db = new Database(config.dbPath);
+  try {
+    fs.chmodSync(config.dbPath, 0o600);
+  } catch {}
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
+  // Overwrite deleted content with zeros instead of leaving it in free pages.
+  db.pragma("secure_delete = ON");
   db.exec(`
     CREATE TABLE IF NOT EXISTS conversations (
       id TEXT PRIMARY KEY,
@@ -97,13 +103,27 @@ export function listConversations(): ConversationSummary[] {
     .all() as ConversationSummary[];
 }
 
+/**
+ * Deleted text must not survive on disk: secure_delete zeroes freed pages, the WAL checkpoint
+ * flushes and truncates the write-ahead log (which still holds old page images), and VACUUM
+ * rebuilds the file.
+ */
+function scrubDisk(): void {
+  // FTS5 deletes only add tombstones; old terms stay in index segments until rebuilt.
+  db().exec("INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')");
+  db().pragma("wal_checkpoint(TRUNCATE)");
+  db().exec("VACUUM");
+  db().pragma("wal_checkpoint(TRUNCATE)");
+}
+
 export function deleteConversation(id: string): void {
   db().prepare("DELETE FROM conversations WHERE id = ?").run(id);
-  db().exec("VACUUM");
+  scrubDisk();
 }
 
 export function deleteAll(): void {
-  db().exec("DELETE FROM conversations; VACUUM;");
+  db().exec("DELETE FROM conversations;");
+  scrubDisk();
 }
 
 // ---------- messages ----------
