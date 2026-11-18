@@ -2,7 +2,8 @@ import { z } from "zod";
 import { runAgent, type MessageParam } from "@/lib/agent/loop";
 import { turnContext } from "@/lib/agent/prompt";
 import { config, resolveModel } from "@/lib/config";
-import { addMessage, addSources, conversationExists, createConversation, recentMessages } from "@/lib/db";
+import { addMessage, addSources, conversationExists, createConversation, recentMessages, type StoredMessage } from "@/lib/db";
+import { guard } from "@/lib/guard";
 import { recall } from "@/lib/memory";
 import type { StreamEvent } from "@/lib/types";
 
@@ -19,7 +20,35 @@ const Body = z.object({
   model: z.string().max(64).optional(),
 });
 
+/**
+ * Replay recent history as plain text within a character budget (newest kept first).
+ * Also guarantees a valid shape: starts with a user turn, no two consecutive turns from the same
+ * role (e.g. a user message whose answer failed or was aborted).
+ */
+function historyToMessages(history: StoredMessage[]): MessageParam[] {
+  const kept: StoredMessage[] = [];
+  let budget = config.historyChars;
+  for (let i = history.length - 1; i >= 0; i--) {
+    budget -= history[i].text.length;
+    if (budget < 0) break;
+    kept.unshift(history[i]);
+  }
+  while (kept.length && kept[0].role !== "user") kept.shift();
+
+  const out: { role: "user" | "assistant"; content: string }[] = [];
+  for (const m of kept) {
+    const last = out[out.length - 1];
+    if (last && last.role === m.role) last.content += "\n\n" + m.text;
+    else out.push({ role: m.role, content: m.text });
+  }
+  // The new user turn is appended next; don't end on a user turn ourselves.
+  if (out.length && out[out.length - 1].role === "user") out.push({ role: "assistant", content: "(no answer was recorded)" });
+  return out;
+}
+
 export async function POST(req: Request) {
+  const denied = guard(req, { json: true });
+  if (denied) return denied;
   const parsed = Body.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
     return Response.json({ error: "Invalid request" }, { status: 400 });
@@ -33,12 +62,13 @@ export async function POST(req: Request) {
   const convId = conversationId;
   const now = new Date();
 
-  // History of this conversation (text-only replay; past turns' tool traffic is not resent).
+  // History of this conversation: text-only replay. Past turns' search results are not resent,
+  // which keeps follow-up turns small; the model can search again if it needs the evidence.
   const history = recentMessages(convId, config.historyMessages);
   const memory = await recall(message, convId, tzOffsetMinutes, now);
   addMessage(convId, "user", message, undefined, now.toISOString());
 
-  const messages: MessageParam[] = history.map((m) => ({ role: m.role, content: m.text }));
+  const messages: MessageParam[] = historyToMessages(history);
   messages.push({
     role: "user",
     content: [
@@ -56,11 +86,15 @@ export async function POST(req: Request) {
         const result = await runAgent(messages, emit, { model, signal: req.signal });
         const messageId = addMessage(convId, "assistant", result.text);
         addSources(messageId, result.sources);
-        emit({ type: "done", messageId });
+        emit({
+          type: "done",
+          messageId,
+          sources: result.sources.map(({ url, title, publishedDate }) => ({ url, title, publishedDate })),
+        });
       } catch (err) {
         if (!req.signal.aborted) {
-          console.error("[chat] agent error:", (err as Error).message);
           const msg = (err as Error).message;
+          console.error("[chat] agent error:", msg.slice(0, 300));
           // Setup problems (missing keys) are safe and useful to show; anything else stays generic.
           emit({
             type: "error",

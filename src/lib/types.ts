@@ -12,7 +12,7 @@ export type StreamEvent =
   | { type: "search"; id: string; query: string }
   | { type: "sources"; id: string; results: SourceRef[] }
   | { type: "text"; delta: string }
-  | { type: "done"; messageId: string }
+  | { type: "done"; messageId: string; sources: SourceRef[] }
   | { type: "error"; message: string };
 
 export interface ConversationSummary {

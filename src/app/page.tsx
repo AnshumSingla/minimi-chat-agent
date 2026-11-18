@@ -174,7 +174,13 @@ export default function Chat() {
         patchLast((m) => ({ ...m, text: m.text + e.delta }));
         break;
       case "done":
-        patchLast((m) => ({ ...m, id: e.messageId, searches: (m.searches ?? []).map((s) => ({ ...s, done: true })) }));
+        // Swap the live list of everything retrieved for the sources the answer actually cites.
+        patchLast((m) => ({
+          ...m,
+          id: e.messageId,
+          sources: e.sources,
+          searches: (m.searches ?? []).map((s) => ({ ...s, done: true })),
+        }));
         break;
       case "error":
         patchLast((m) => ({ ...m, error: e.message }));
