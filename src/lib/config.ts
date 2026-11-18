@@ -54,6 +54,10 @@ export const config = {
   memory: {
     maxRecalledTurns: 6,
     maxCharsPerTurn: 1800,
+    /** Minimum cosine similarity for a semantic (MiniLM) recall hit. */
+    semanticThreshold: 0.35,
+    /** Don't hold up a reply waiting for the local model to load. */
+    embedTimeoutMs: 1500,
   },
   /** How many prior messages of the current conversation are replayed to the model. */
   historyMessages: 30,

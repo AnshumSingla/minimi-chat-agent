@@ -1,6 +1,16 @@
 import * as chrono from "chrono-node";
 import { config } from "./config";
-import { replyTo, searchUserMessages, sourcesFor, userMessagesBetween, type StoredMessage } from "./db";
+import {
+  replyTo,
+  saveEmbeddings,
+  searchUserMessages,
+  sourcesFor,
+  userEmbeddings,
+  userMessagesBetween,
+  userMessagesMissingEmbeddings,
+  type StoredMessage,
+} from "./db";
+import { cosine, embed } from "./embeddings";
 
 /**
  * Recall runs in the harness, before the model: the agent's only tool is web search.
@@ -9,7 +19,8 @@ import { replyTo, searchUserMessages, sourcesFor, userMessagesBetween, type Stor
  *    in the user's timezone. Date maths lives in code, not in the model.
  * 2. Pull past user turns from those windows, plus the assistant replies and the sources used then.
  * 3. If there's no date but the message points at the past ("I asked you", "we shortlisted"),
- *    fall back to full-text search on the topic.
+ *    match past turns by meaning (local MiniLM embeddings) and by keywords (SQLite FTS5).
+ *    Embeddings run on this machine; if the model isn't available, keyword search alone is used.
  */
 
 const DAY_MS = 86_400_000;
@@ -106,16 +117,38 @@ function clip(s: string, n: number): string {
   return s.length <= n ? s : s.slice(0, n).trimEnd() + " …";
 }
 
-export function recall(
+/**
+ * Cosine similarity of the message to every stored user message (other conversations).
+ * Also backfills vectors for messages stored before the model was ready. Null if the local model
+ * isn't available within the timeout.
+ */
+async function semanticScores(
+  message: string,
+  conversationId: string,
+): Promise<Map<string, { message: StoredMessage; score: number }> | null> {
+  const missing = userMessagesMissingEmbeddings(64);
+  const vecs = await embed([message, ...missing.map((m) => m.text)]);
+  if (!vecs) return null;
+  if (missing.length) saveEmbeddings(missing.map((m, i) => ({ messageId: m.id, vec: vecs[i + 1] })));
+  const q = vecs[0];
+  return new Map(
+    userEmbeddings(conversationId).map(({ message: m, vec }) => [m.id, { message: m, score: cosine(q, vec) }]),
+  );
+}
+
+export async function recall(
   message: string,
   conversationId: string,
   offsetMin: number,
   now = new Date(),
-): RecallResult {
+): Promise<RecallResult> {
   const windows = resolveDayWindows(message, now, offsetMin);
   const words = keywords(message);
   const refersToPast = windows.length > 0 || PAST_REFERENCE.test(message);
   if (!refersToPast) return { block: null, hits: 0 };
+
+  const semantic = await semanticScores(message, conversationId);
+  const relevance = (m: StoredMessage) => semantic?.get(m.id)?.score ?? overlap(m.text, words) / 10;
 
   let candidates: StoredMessage[] = [];
   const lines: string[] = [];
@@ -133,15 +166,31 @@ export function recall(
       candidates.push(...found);
     }
     // Several turns that day: prefer the ones about the same topic, keep chronological order.
-    if (candidates.length > config.memory.maxRecalledTurns && words.length > 0) {
-      const ranked = [...candidates].sort((a, b) => overlap(b.text, words) - overlap(a.text, words));
+    if (candidates.length > config.memory.maxRecalledTurns) {
+      const ranked = [...candidates].sort((a, b) => relevance(b) - relevance(a));
       const keep = new Set(ranked.slice(0, config.memory.maxRecalledTurns).map((m) => m.id));
       candidates = candidates.filter((m) => keep.has(m.id));
     }
   } else {
-    candidates = searchUserMessages(ftsQuery(words), conversationId, config.memory.maxRecalledTurns);
-    candidates.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    lines.push(`No explicit date; searched past conversations for: ${words.join(", ") || "(nothing)"}.`);
+    // Hybrid: semantic hits above the threshold, plus keyword hits; boost what both agree on.
+    const scored = new Map<string, { message: StoredMessage; score: number }>();
+    if (semantic) {
+      for (const hit of semantic.values()) {
+        if (hit.score >= config.memory.semanticThreshold) scored.set(hit.message.id, { ...hit });
+      }
+    }
+    for (const m of searchUserMessages(ftsQuery(words), conversationId, config.memory.maxRecalledTurns)) {
+      const base = scored.get(m.id)?.score ?? semantic?.get(m.id)?.score ?? 0.3;
+      scored.set(m.id, { message: m, score: base + 0.15 });
+    }
+    candidates = [...scored.values()]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, config.memory.maxRecalledTurns)
+      .map((h) => h.message)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    lines.push(
+      `No explicit date; matched past conversations ${semantic ? "by meaning (on-device model) and " : ""}by keywords: ${words.join(", ") || "(none)"}.`,
+    );
   }
 
   candidates = candidates.slice(0, config.memory.maxRecalledTurns);

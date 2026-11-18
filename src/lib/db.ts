@@ -57,6 +57,12 @@ function open(): DB {
     CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
       INSERT INTO messages_fts(messages_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
     END;
+
+    -- Local MiniLM vectors (Float32, 384 dims) for user messages; used for semantic recall.
+    CREATE TABLE IF NOT EXISTS message_embeddings (
+      message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+      vec BLOB NOT NULL
+    );
   `);
   return db;
 }
@@ -214,6 +220,41 @@ export function searchUserMessages(ftsQuery: string, excludeConv: string | undef
   } catch {
     return []; // malformed FTS query: treat as no match
   }
+}
+
+// ---------- embeddings ----------
+
+export function saveEmbeddings(rows: { messageId: string; vec: Float32Array }[]): void {
+  const stmt = db().prepare("INSERT OR REPLACE INTO message_embeddings (message_id, vec) VALUES (?, ?)");
+  db().transaction(() => {
+    for (const r of rows) stmt.run(r.messageId, Buffer.from(r.vec.buffer, r.vec.byteOffset, r.vec.byteLength));
+  })();
+}
+
+/** User messages without a vector yet (e.g. written before the model was available, or seeded). */
+export function userMessagesMissingEmbeddings(limit: number): { id: string; text: string }[] {
+  return db()
+    .prepare(
+      `SELECT m.id, m.text FROM messages m LEFT JOIN message_embeddings e ON e.message_id = m.id
+       WHERE m.role = 'user' AND e.message_id IS NULL ORDER BY m.created_at DESC LIMIT ?`,
+    )
+    .all(limit) as { id: string; text: string }[];
+}
+
+/** All user-message vectors outside one conversation. Fine for a personal history (thousands of rows). */
+export function userEmbeddings(excludeConv?: string): { message: StoredMessage; vec: Float32Array }[] {
+  const rows = db()
+    .prepare(
+      `SELECT m.id, m.conversation_id AS conversationId, m.role, m.text, m.content_json AS contentJson,
+              m.created_at AS createdAt, e.vec AS vec
+       FROM message_embeddings e JOIN messages m ON m.id = e.message_id
+       WHERE m.role = 'user' AND m.conversation_id != ?`,
+    )
+    .all(excludeConv ?? "") as (StoredMessage & { vec: Buffer })[];
+  return rows.map(({ vec, ...message }) => ({
+    message,
+    vec: new Float32Array(vec.buffer.slice(vec.byteOffset, vec.byteOffset + vec.byteLength)),
+  }));
 }
 
 /** The assistant reply that directly follows a user message. */
