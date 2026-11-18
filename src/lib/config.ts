@@ -48,8 +48,12 @@ export const config = {
   search: {
     defaultResults: 5,
     maxResults: 8,
+    /** Total chars per result handed to the model (highlights + extract). */
     maxCharsPerResult: 1500,
+    /** Page extract requested from Exa, after the query-relevant highlights. */
+    maxTextChars: 700,
     timeoutMs: 12_000,
+    cacheTtlMs: 10 * 60_000,
   },
   memory: {
     maxRecalledTurns: 6,
@@ -61,6 +65,8 @@ export const config = {
   },
   /** How many prior messages of the current conversation are replayed to the model. */
   historyMessages: 30,
+  /** Character budget for replayed history (oldest dropped first); keeps long chats cheap. */
+  historyChars: 24_000,
 };
 
 export function requireEnv(name: "ANTHROPIC_API_KEY" | "EXA_API_KEY"): string {
